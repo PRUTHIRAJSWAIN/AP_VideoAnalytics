@@ -1,0 +1,56 @@
+services:
+
+  redis:
+    image: redis:latest
+    container_name: redis_server
+    ports:
+      - "6379:6379"
+    networks:
+      - safety_net
+    restart: always
+
+  camera_streamer:
+    image: camera_streamer
+    container_name: camera_streamer_container
+    environment:
+      REDIS_HOST: redis_server
+    volumes:
+      - D:/personalproject/AP_VA_Server/camera_streamer/videos:/videos
+    networks:
+      - safety_net
+    restart: always
+    depends_on:
+      - redis
+
+  central_server:
+    image: central_server
+    container_name: central_server_container
+    environment:
+      REDIS_HOST: redis_server
+      SHARED_DIR: /shared
+    volumes:
+      - D:/personalproject/AP_VA_Server/central_server/shared:/shared
+    networks:
+      - safety_net
+    restart: always
+    depends_on:
+      - redis
+
+  model_worker:
+    build: ./model_worker
+    container_name: model_worker_container
+    environment:
+      REDIS_HOST: redis_server
+      SHARED_DIR: /shared
+    volumes:
+      - D:/personalproject/AP_VA_Server/central_server/shared:/shared
+    networks:
+      - safety_net
+    restart: always
+    depends_on:
+      - redis
+      - central_server
+
+networks:
+  safety_net:
+    driver: bridge

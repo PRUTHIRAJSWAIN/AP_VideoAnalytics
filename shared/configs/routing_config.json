@@ -1,0 +1,14 @@
+{
+  "plant1": {
+    "siteA": {
+      "cam01": "yolo_v8",
+      "cam02": "helmet_detector"
+    }
+  },
+
+  "plant9": {
+    "siteZ": {
+      "cam77": "yolo_v8"
+    }
+  }
+}
