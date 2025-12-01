@@ -5,8 +5,9 @@ import redis
 import base64
 import traceback
 
-from PIL import Image
-import numpy as np
+from ultralytics import YOLO
+import psycopg2
+from psycopg2.extras import Json
 
 # ---------------------------------------------------------
 # REDIS CONNECTION
@@ -14,69 +15,58 @@ import numpy as np
 REDIS_HOST = os.getenv("REDIS_HOST", "redis_server")
 r = redis.StrictRedis(host=REDIS_HOST, port=6379, db=0)
 
-print("🚀 Model Worker Started (Auto GPU/CPU Mode)")
+print("🚀 Model Worker Started (YOLO Only)")
 
 # ---------------------------------------------------------
-# AUTO DETECT MODE (GPU/TRITON or CPU)
+# GPU CHECK
 # ---------------------------------------------------------
-
 USE_GPU = False
-USE_TRITON = False
-
 try:
     import torch
-
     if torch.cuda.is_available():
         USE_GPU = True
-        print("💠 GPU detected! CUDA available.")
+        print("💠 GPU detected! Using CUDA.")
     else:
-        print("⬛ No GPU found (CUDA unavailable).")
-
+        print("⬛ CPU mode")
 except Exception:
-    print("❌ PyTorch missing, cannot detect GPU.")
+    print("❌ PyTorch missing — CPU mode only.")
 
-# Try Triton client
-try:
-    import tritonclient.http as httpclient
-    USE_TRITON = True
-    print("📡 Triton client available.")
-except Exception:
-    print("⚠️ Triton client not available; fallback to CPU YOLO.")
 
 # ---------------------------------------------------------
-# LOAD MODEL ACCORDING TO MODE
+# LOAD YOLO MODEL
 # ---------------------------------------------------------
+device = 0 if USE_GPU else "cpu"
+print(f"📦 Loading YOLO model on {device}...")
+model = YOLO("yolov8n.pt")
+model.to(device)
+print("✨ YOLO loaded.")
 
-if USE_TRITON:
-    try:
-        triton_client = httpclient.InferenceServerClient(url="triton_server:8000")
-        print("🔗 Connected to Triton server.")
-    except Exception:
-        print("❌ Triton server not reachable. Falling back to CPU.")
-        USE_TRITON = False
-
-if not USE_TRITON:
-    # Load Ultralytics YOLO model
-    from ultralytics import YOLO
-    try:
-        print("📦 Loading YOLO model on CPU...")
-        model = YOLO("yolov8n.pt")   # put your model here
-        print("✨ CPU YOLO loaded.")
-    except Exception as e:
-        print("❌ Error loading CPU model:", e)
-        raise
 
 # ---------------------------------------------------------
-# HELPER: Run Inference
+# POSTGRES CONNECTION
 # ---------------------------------------------------------
-def run_inference_cpu(image_paths):
-    """Run inference using YOLO CPU."""
+pg_conn = psycopg2.connect(
+    host=os.getenv("PG_HOST", "localhost"),
+    port=os.getenv("PG_PORT", "5432"),
+    dbname=os.getenv("PG_DB", "yolo_db"),
+    user=os.getenv("PG_USER", "postgres"),
+    password=os.getenv("PG_PASSWORD", "postgres")
+)
+pg_conn.autocommit = True
+pg_cursor = pg_conn.cursor()
+print("🐘 Connected to PostgreSQL")
+
+
+# ---------------------------------------------------------
+# YOLO Inference
+# ---------------------------------------------------------
+def run_inference_yolo(image_paths):
+
+    # send list of paths — Ultralytics handles batching internally
+    results_raw = model(image_paths)
+
     results = []
-
-    batch = [np.array(Image.open(p)) for p in image_paths]
-    output = model(batch)
-
-    for i, res in enumerate(output):
+    for i, res in enumerate(results_raw):
         detections = []
         for box in res.boxes:
             detections.append({
@@ -93,29 +83,15 @@ def run_inference_cpu(image_paths):
     return results
 
 
-def run_inference_triton(image_paths):
-    """Run inference using Triton."""
-    results = []
-
-    # TODO: Depends on your Triton model input format.
-    # Placeholder implementation:
-    for p in image_paths:
-        results.append({
-            "image_path": p,
-            "detections": [{"cls": 0, "conf": 0.99, "xyxy": [10, 10, 100, 100]}]
-        })
-
-    return results
-
 # ---------------------------------------------------------
-# MAIN LOOP – Read Batches From Redis
+# WORKER LOOP
 # ---------------------------------------------------------
-
 def process_batches():
     last_id = "0-0"
 
     while True:
         try:
+            # Read batch from Redis stream
             messages = r.xread({"model_queue:yolo_model": last_id}, block=5000, count=1)
             if not messages:
                 continue
@@ -129,28 +105,25 @@ def process_batches():
 
             image_paths = [item["frame_path"] for item in batch]
 
-            print(f"📥 Received batch with {len(image_paths)} images")
+            print(f"📥 Batch received: {len(image_paths)} images")
 
-            # -------------------------
-            # Run inference
-            # -------------------------
-            if USE_TRITON:
-                results = run_inference_triton(image_paths)
-            else:
-                results = run_inference_cpu(image_paths)
+            # Run YOLO
+            results = run_inference_yolo(image_paths)
 
-            # --------------------------
-            # Push results to next queue
-            # --------------------------
-            r.xadd("analysis_queue", {"results": json.dumps(results)})
+            # Save to PostgreSQL
+            for item in results:
+                pg_cursor.execute("""
+                    INSERT INTO yolo_results (image_path, detections)
+                    VALUES (%s, %s)
+                """, (item["image_path"], Json(item["detections"])))
 
-            print(f"📤 Sent inference results ({len(results)} images)")
+            print(f"💾 Saved {len(results)} results")
 
-            # delete processed batch
+            # Delete message from Redis
             r.xdel("model_queue:yolo_model", msg_id)
 
         except Exception as e:
-            print("❌ ERROR in worker:", e)
+            print("❌ Worker error:", e)
             traceback.print_exc()
             time.sleep(1)
 

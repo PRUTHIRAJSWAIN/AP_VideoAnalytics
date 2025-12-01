@@ -5,12 +5,29 @@ import time
 import json
 import threading
 from datetime import datetime
+import psycopg2  
+from psycopg2.extras import execute_values 
 
 # -------------------------------------------------------
-# 1. Redis Connection
+# 1. Redis Connection and Postgres Connection
 # -------------------------------------------------------
 REDIS_HOST = os.getenv("REDIS_HOST", "redis_server")
 r = redis.StrictRedis(host=REDIS_HOST, port=6379, db=0)
+
+
+PG_HOST = os.getenv("PG_HOST", "postgres_server")
+PG_USER = os.getenv("PG_USER", "postgres")
+PG_PASS = os.getenv("PG_PASS", "postgres")
+PG_DB   = os.getenv("PG_DB",   "frames_db")
+
+pg_conn = psycopg2.connect(
+    host=PG_HOST,
+    user=PG_USER,
+    password=PG_PASS,
+    dbname=PG_DB
+)
+pg_conn.autocommit = True
+pg_cur = pg_conn.cursor()
 
 SHARED_DIR = os.getenv("SHARED_DIR", "/shared")  # mount point inside containers
 SAVE_DIR = os.path.join(SHARED_DIR, "frames")    # /shared/frames
@@ -20,7 +37,7 @@ print("🚀 Central consumer with batching started")
 
 
 # -------------------------------------------------------
-# 2. Load config files (model settings + camera routing)
+# 2. Load Config Files Safely
 # -------------------------------------------------------
 def load_json(path):
     try:
@@ -29,38 +46,37 @@ def load_json(path):
     except:
         print(f"⚠️ Could not read {path}, using empty")
         return {}
-    
-MODELS_CONFIG_PATH = os.path.join(SHARED_DIR, "configs", "models_configs.json")
+
+MODELS_CONFIG_PATH = os.path.join(SHARED_DIR, "configs", "models_config.json")
 ROUTING_CONFIG_PATH = os.path.join(SHARED_DIR, "configs", "routing_config.json")
 
 config_models = load_json(MODELS_CONFIG_PATH)
 config_routing = load_json(ROUTING_CONFIG_PATH)
 
-
-# Track last modification time → for hot reload
-models_mtime = os.path.getmtime(MODELS_CONFIG_PATH)
-routing_mtime = os.path.getmtime(ROUTING_CONFIG_PATH)
+# Track modification timestamps
+models_mtime = os.path.getmtime(MODELS_CONFIG_PATH) if os.path.exists(MODELS_CONFIG_PATH) else 0
+routing_mtime = os.path.getmtime(ROUTING_CONFIG_PATH) if os.path.exists(ROUTING_CONFIG_PATH) else 0
 
 
 def hot_reload_configs():
-    """Reload configuration JSON files when changed."""
+    """Reload JSON files when they change on disk."""
     global config_models, config_routing, models_mtime, routing_mtime
 
     while True:
         try:
-            # Check models config
-            new_m_mtime = os.path.getmtime(MODELS_CONFIG_PATH)
-            if new_m_mtime != models_mtime:
-                config_models = load_json(MODELS_CONFIG_PATH)
-                models_mtime = new_m_mtime
-                print(f"🔄 Reloaded { MODELS_CONFIG_PATH }")
+            if os.path.exists(MODELS_CONFIG_PATH):
+                new_m_mtime = os.path.getmtime(MODELS_CONFIG_PATH)
+                if new_m_mtime != models_mtime:
+                    config_models = load_json(MODELS_CONFIG_PATH)
+                    models_mtime = new_m_mtime
+                    print(f"🔄 Reloaded {MODELS_CONFIG_PATH}")
 
-            # Check routing config
-            new_r_mtime = os.path.getmtime(ROUTING_CONFIG_PATH)
-            if new_r_mtime != routing_mtime:
-                config_routing = load_json(ROUTING_CONFIG_PATH)
-                routing_mtime = new_r_mtime
-                print(f"🔄 Reloaded { ROUTING_CONFIG_PATH }")
+            if os.path.exists(ROUTING_CONFIG_PATH):
+                new_r_mtime = os.path.getmtime(ROUTING_CONFIG_PATH)
+                if new_r_mtime != routing_mtime:
+                    config_routing = load_json(ROUTING_CONFIG_PATH)
+                    routing_mtime = new_r_mtime
+                    print(f"🔄 Reloaded {ROUTING_CONFIG_PATH}")
 
         except Exception as e:
             print("⚠️ Hot reload error:", e)
@@ -68,62 +84,47 @@ def hot_reload_configs():
         time.sleep(1)
 
 
-# Start hot-reload thread
 threading.Thread(target=hot_reload_configs, daemon=True).start()
 
 
 # -------------------------------------------------------
-# 3. Batch storage structure (in memory)
+# 3. Batch Structures
 # -------------------------------------------------------
-batches = {}  # {"model_name": [{"path":..., "timestamp":...}, ...]}
-batch_lock = threading.Lock()  # thread safety
-
-
-# Track when a batch started
-batch_start_time = {}  # {"model_name": timestamp}
+batches = {}              # {"model_name": [...]}
+batch_lock = threading.Lock()
+batch_start_time = {}     # {"model_name": timestamp}
 
 
 # -------------------------------------------------------
-# 4. Helper functions
+# 4. Helpers
 # -------------------------------------------------------
-
 def get_model_for_camera(plant, site, camera):
-    """Return the model assigned to (plant, site, camera)."""
+    """Return model assigned for a camera."""
     try:
-        return config_routing[plant][site][camera]
+        return config_routing[plant][site][camera]['model']
     except:
         return None
 
 
 def dispatch_batch(model_name):
-    """Send completed batch to Redis and clear it."""
-
+    """Push completed batch to Redis stream."""
     with batch_lock:
         batch = batches.get(model_name, [])
-
         if not batch:
-            return  # nothing to send
+            return
 
-        # Redis stream for model → model batches
+        payload = json.dumps(batch)
         stream_name = f"model_queue:{model_name}"
 
-        # Convert batch list to JSON
-        payload = json.dumps(batch)
-
-        # Push to Redis
         r.xadd(stream_name, {"batch": payload})
-
         print(f"📤 Sent batch → {model_name} | size={len(batch)}")
 
-        # Clear batch
         batches[model_name] = []
         batch_start_time[model_name] = time.time()
 
 
 def add_to_batch(model_name, item):
-    """Add image info to model batch."""
     with batch_lock:
-
         if model_name not in batches:
             batches[model_name] = []
             batch_start_time[model_name] = time.time()
@@ -132,11 +133,11 @@ def add_to_batch(model_name, item):
 
 
 def batch_monitor():
-    """Dispatch batches if max_wait_time exceeded."""
+    """Periodically dispatch timed-out batches."""
     while True:
         with batch_lock:
+            timed_out = []
             for model_name, batch_items in batches.items():
-
                 if not batch_items:
                     continue
 
@@ -144,19 +145,23 @@ def batch_monitor():
                 started = batch_start_time.get(model_name, time.time())
 
                 if time.time() - started >= max_wait:
-                    print(f"⏱ Timeout reached → dispatching {model_name}")
-                    dispatch_batch(model_name)
+                    timed_out.append(model_name)
 
-        time.sleep(0.2)
+
+        for model_name in timed_out:
+            print(f"⏱ Timeout → dispatching {model_name}")
+            dispatch_batch(model_name)
+
+        time.sleep(5)
 
 
 threading.Thread(target=batch_monitor, daemon=True).start()
 
 
 # -------------------------------------------------------
-# 5. MAIN LOOP – Read frames → Save → Route → Batch
+# 5. MAIN LOOP
 # -------------------------------------------------------
-last_id = "0-0"
+last_id = "$"   # Read ONLY new messages (important!)
 
 while True:
     try:
@@ -174,30 +179,44 @@ while True:
         camera = fields[b"camera_code"].decode()
         timestamp = fields[b"timestamp"].decode()
 
-        # Which model will process this camera?
+        # Determine model
         model = get_model_for_camera(plant, site, camera)
         if model is None:
-            print(f"⚠️ No model assigned for {plant}/{site}/{camera}")
+            print(f"⚠️ No model for {plant}/{site}/{camera}")
             continue
 
-        # Convert time to folder format
+        # Convert timestamp → folder name
         ts = datetime.fromisoformat(timestamp)
         folder_time = ts.strftime("%Y_%m_%d_%H")
 
-        # Save image to disk
+        # Save decoded image
         frame_bytes = base64.b64decode(fields[b"frame"])
 
         save_path = os.path.join(SAVE_DIR, plant, site, camera, folder_time)
         os.makedirs(save_path, exist_ok=True)
-        file_path = os.path.join(save_path, f"{msg_id}.jpg")
+
+        file_path = os.path.join(save_path, f"{msg_id.decode()}.jpg")
 
         with open(file_path, "wb") as f:
             f.write(frame_bytes)
 
         print(f"✔ Saved {file_path}")
 
-        # Remove from Redis to save RAM
-        r.xdel("camera_stream", msg_id)
+        # -------------------------------------------------------
+        # 🟢 ADD: Insert into Postgres BEFORE batching
+        # -------------------------------------------------------
+        pg_cur.execute(
+            """
+            INSERT INTO frame_repository (frame_id, plant, site, camera, timestamp, file_path)
+            VALUES (%s, %s, %s, %s, %s, %s)
+            ON CONFLICT (frame_id) DO NOTHING
+            """,
+            (msg_id.decode(), plant, site, camera, timestamp, file_path)
+        )
+        # -------------------------------------------------------
+
+        # DO NOT DELETE STREAM MESSAGE — EVER.
+        # If you want cleaning, use XTRIM at system level.
 
         # Add to batch
         add_to_batch(model, {
@@ -208,12 +227,12 @@ while True:
             "timestamp": timestamp
         })
 
-        # Check if batch full → send immediately
+        # Batch full? dispatch immediately
         current_batch = batches.get(model, [])
         batch_size = config_models.get(model, {}).get("batch_size", 4)
 
         if len(current_batch) >= batch_size:
-            print(f"📦 Max batch size reached → {model}")
+            print(f"📦 Max batch size → {model}")
             dispatch_batch(model)
 
     except Exception as e:

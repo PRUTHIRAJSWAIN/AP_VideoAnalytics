@@ -1,3 +1,5 @@
+version: "3.8"
+
 services:
 
   redis:
@@ -9,7 +11,33 @@ services:
       - safety_net
     restart: always
 
+  postgres:
+    image: postgres:15
+    container_name: postgres_server
+    environment:
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: postgres
+      POSTGRES_DB: frames_db
+    volumes:
+      # persistent database
+      - D:/personalproject/AP_VA_Server/postgres_data:/var/lib/postgresql/data
+      # auto-init SQL files
+      - D:/personalproject/AP_VA_Server/initdb:/docker-entrypoint-initdb.d
+    ports:
+      - "5432:5432"
+    networks:
+      - safety_net
+    restart: always
+
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres -d frames_db"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+
   camera_streamer:
+    build: ./camera_streamer
     image: camera_streamer
     container_name: camera_streamer_container
     environment:
@@ -23,33 +51,54 @@ services:
       - redis
 
   central_server:
+    build: ./central_server
     image: central_server
     container_name: central_server_container
     environment:
-      REDIS_HOST: redis_server
-      SHARED_DIR: /shared
-    volumes:
-      - D:/personalproject/AP_VA_Server/central_server/shared:/shared
-    networks:
-      - safety_net
-    restart: always
-    depends_on:
-      - redis
+      PG_HOST: postgres_server
+      PG_USER: postgres
+      PG_PASS: postgres
+      PG_DB: frames_db
 
-  model_worker:
-    build: ./model_worker
-    container_name: model_worker_container
-    environment:
       REDIS_HOST: redis_server
       SHARED_DIR: /shared
     volumes:
-      - D:/personalproject/AP_VA_Server/central_server/shared:/shared
+      - D:/personalproject/AP_VA_Server/shared:/shared
     networks:
       - safety_net
     restart: always
     depends_on:
-      - redis
-      - central_server
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_started
+
+
+  # model_worker:
+  #   build: ./model_worker
+  #   container_name: model_worker_container
+  #   image: model_worker
+  #   environment:
+  #     PG_HOST: postgres_server
+  #     PG_PORT: "5432"
+  #     PG_DB: frames_db
+  #     PG_USER: postgres
+  #     PG_PASSWORD: postgres
+
+  #     REDIS_HOST: redis_server
+  #     SHARED_DIR: /shared
+  #   volumes:
+  #     - D:/personalproject/AP_VA_Server/shared:/shared
+  #   networks:
+  #     - safety_net
+  #   restart: always
+  #   depends_on:
+  #     postgres:
+  #       condition: service_healthy
+  #     central_server:
+  #       condition: service_started
+  #     redis:
+  #       condition: service_started
 
 networks:
   safety_net:

@@ -67,7 +67,7 @@ def camera_worker(cam_cfg):
             "frame": encoded
         })
 
-        print(f"📤 Sent frame: {cam_cfg['plant_id']}-{cam_cfg['site_id']}-{cam_cfg['camera_code']}")
+        print(f"📤 Sent frame: {cam_cfg['plant_id']}-{cam_cfg['site_id']}-{cam_cfg['camera_code']}-time{timestamp}")
         time.sleep(cam_cfg["interval"])
 
 print("🚀 Camera streamer started")

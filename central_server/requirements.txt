@@ -3,4 +3,5 @@ redis
 fastapi
 uvicorn
 opencv-python-headless
+psycopg2-binary
 

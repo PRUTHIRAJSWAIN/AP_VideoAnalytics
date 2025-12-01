@@ -1,14 +1,17 @@
 {
-  "plant1": {
-    "siteA": {
-      "cam01": "yolo_v8",
-      "cam02": "helmet_detector"
+  "plantA": {
+    "site1": {
+      "CAM01": { "model" :"yolo_v8"},
+      "CAM02": { "model" :"helmet_detector"}
+    },
+    "site2": {
+      "CAM02": { "model" :"helmet_detector"}
     }
   },
 
   "plant9": {
     "siteZ": {
-      "cam77": "yolo_v8"
+      "cam77": { "model" :"yolo_v8"}
     }
   }
 }

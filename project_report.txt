@@ -1,10 +1,19 @@
 
-camera_streamer
+==================================================
+FILE: .gitignore
+==================================================
 
-central_server
+camera_streamer/videos/*
+!camera_streamer/videos/
 
-File name: docker-compose.yml
-Content: services:
+
+==================================================
+FILE: docker-compose.yml
+==================================================
+
+version: "3.8"
+
+services:
 
   redis:
     image: redis:latest
@@ -15,11 +24,39 @@ Content: services:
       - safety_net
     restart: always
 
+  postgres:
+    image: postgres:15
+    container_name: postgres_server
+    environment:
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: postgres
+      POSTGRES_DB: frames_db
+    volumes:
+      # persistent database
+      - D:/personalproject/AP_VA_Server/postgres_data:/var/lib/postgresql/data
+      # auto-init SQL files
+      - D:/personalproject/AP_VA_Server/initdb:/docker-entrypoint-initdb.d
+    ports:
+      - "5432:5432"
+    networks:
+      - safety_net
+    restart: always
+
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres -d frames_db"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+
   camera_streamer:
+    build: ./camera_streamer
     image: camera_streamer
     container_name: camera_streamer_container
     environment:
       REDIS_HOST: redis_server
+    volumes:
+      - D:/personalproject/AP_VA_Server/camera_streamer/videos:/videos
     networks:
       - safety_net
     restart: always
@@ -27,119 +64,64 @@ Content: services:
       - redis
 
   central_server:
+    build: ./central_server
     image: central_server
     container_name: central_server_container
     environment:
-      REDIS_HOST: redis_server
-    volumes:
-      - D:/personalproject/AP_VA_Server/central_server/output:/received_frames
-      - D:/personalproject/AP_VA_Server/central_server:/app    # shared configs
-    networks:
-      - safety_net
-    restart: always
-    depends_on:
-      - redis
+      PG_HOST: postgres_server
+      PG_USER: postgres
+      PG_PASS: postgres
+      PG_DB: frames_db
 
-  model_worker:
-    build: ./model_worker          # new folder, new service
-    container_name: model_worker_container
-    environment:
       REDIS_HOST: redis_server
+      SHARED_DIR: /shared
     volumes:
-      # same shared folder so model_worker sees saved images
-      - D:/personalproject/AP_VA_Server/central_server/output:/received_frames
+      - D:/personalproject/AP_VA_Server/shared:/shared
     networks:
       - safety_net
     restart: always
     depends_on:
-      - redis
-      - central_server
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_started
+
+
+  # model_worker:
+  #   build: ./model_worker
+  #   container_name: model_worker_container
+  #   image: model_worker
+  #   environment:
+  #     PG_HOST: postgres_server
+  #     PG_PORT: "5432"
+  #     PG_DB: frames_db
+  #     PG_USER: postgres
+  #     PG_PASSWORD: postgres
+
+  #     REDIS_HOST: redis_server
+  #     SHARED_DIR: /shared
+  #   volumes:
+  #     - D:/personalproject/AP_VA_Server/shared:/shared
+  #   networks:
+  #     - safety_net
+  #   restart: always
+  #   depends_on:
+  #     postgres:
+  #       condition: service_healthy
+  #     central_server:
+  #       condition: service_started
+  #     redis:
+  #       condition: service_started
 
 networks:
   safety_net:
     driver: bridge
 
+==================================================
+FILE: camera_streamer\app.py
+==================================================
 
-File name: extractor.py
-Content: from pathlib import Path
-
-def read_file(file_path):
-    """Reads content of a file, returns content if it's a readable text file."""
-    try:
-        # Open file with 'utf-8' encoding
-        return file_path.read_text(encoding='utf-8')
-    except UnicodeDecodeError:
-        # If the file is not a text file, return None
-        return None
-    except Exception as e:
-        # Log other errors (like permission issues) and return None
-        print(f"Error reading file {file_path}: {e}")
-        return None
-
-def generate_report(root_folder):
-    """Generates a report with the folder structure and file content."""
-    report = []
-
-    # Walk through all folders and files in the root folder
-    for path in root_folder.rglob('*'):  # rglob('*') recursively gets all files and directories
-        # Get relative path from root_folder
-        rel_path = path.relative_to(root_folder)
-        
-        # Add folder structure (if it's a directory, skip reading its content)
-        if path.is_dir():
-            report.append(f"\n{rel_path}")
-        elif path.is_file():
-            file_content = read_file(path)
-            
-            if file_content:  # If content was successfully read
-                report.append(f"\nFile name: {rel_path}")
-                report.append(f"Content: {file_content}")
-            else:  # If it's a binary or unreadable file, just append its name
-                report.append(f"\nFile name: {rel_path}")
-                report.append("Content: [Binary/Unreadable file]")
-
-    return '\n'.join(report)
-
-def save_report(report, output_file):
-    """Save the generated report to a text file."""
-    try:
-        output_file.write_text(report, encoding='utf-8')
-        print(f"Report saved to {output_file}")
-    except Exception as e:
-        print(f"Error saving report: {e}")
-
-def main():
-    # Get the current working directory (the folder where the script is run from)
-    root_folder = Path.cwd()  # Path to the current working directory
-
-    # Output text file to save the report
-    output_file = root_folder / 'project_report.txt'
-
-    # Check if the root folder exists
-    if not root_folder.exists():
-        print(f"Error: The folder '{root_folder}' does not exist.")
-        return
-
-    # Generate the report
-    report = generate_report(root_folder)
-
-    # Save the report
-    save_report(report, output_file)
-
-if __name__ == "__main__":
-    print('Starting report generation...')
-    main()
-
-
-model_worker
-
-File name: project_report.txt
-Content: [Binary/Unreadable file]
-
-shared
-
-File name: camera_streamer\app.py
-Content: import cv2
+import cv2
 import redis
 import base64
 import time
@@ -208,7 +190,7 @@ def camera_worker(cam_cfg):
             "frame": encoded
         })
 
-        print(f"📤 Sent frame: {cam_cfg['plant_id']}-{cam_cfg['site_id']}-{cam_cfg['camera_code']}")
+        print(f"📤 Sent frame: {cam_cfg['plant_id']}-{cam_cfg['site_id']}-{cam_cfg['camera_code']}-time{timestamp}")
         time.sleep(cam_cfg["interval"])
 
 print("🚀 Camera streamer started")
@@ -229,8 +211,11 @@ while True:
     time.sleep(1)
 
 
-File name: camera_streamer\Dockerfile
-Content: FROM python:3.10-slim
+==================================================
+FILE: camera_streamer\Dockerfile
+==================================================
+
+FROM python:3.10-slim
 
 WORKDIR /app
 
@@ -251,30 +236,57 @@ COPY . .
 CMD ["python", "app.py"]
 
 
-File name: camera_streamer\requirements.txt
-Content: numpy<2
+==================================================
+FILE: camera_streamer\requirements.txt
+==================================================
+
+numpy<2
 opencv-python-headless==4.9.0.80
 redis==5.0.1
 
 
-camera_streamer\videos
+==================================================
+FILE: camera_streamer\videos\.gitkeep
+==================================================
 
-File name: central_server\central_consumer.py
-Content: import redis
+
+
+==================================================
+FILE: central_server\central_consumer.py
+==================================================
+
+import redis
 import base64
 import os
 import time
 import json
 import threading
 from datetime import datetime
+import psycopg2  
+from psycopg2.extras import execute_values 
 
 # -------------------------------------------------------
-# 1. Redis Connection
+# 1. Redis Connection and Postgres Connection
 # -------------------------------------------------------
 REDIS_HOST = os.getenv("REDIS_HOST", "redis_server")
 r = redis.StrictRedis(host=REDIS_HOST, port=6379, db=0)
 
-SHARED_DIR = os.getenv("SHARED_DIR", "/shared")   # mount point inside containers
+
+PG_HOST = os.getenv("PG_HOST", "postgres_server")
+PG_USER = os.getenv("PG_USER", "postgres")
+PG_PASS = os.getenv("PG_PASS", "postgres")
+PG_DB   = os.getenv("PG_DB",   "frames_db")
+
+pg_conn = psycopg2.connect(
+    host=PG_HOST,
+    user=PG_USER,
+    password=PG_PASS,
+    dbname=PG_DB
+)
+pg_conn.autocommit = True
+pg_cur = pg_conn.cursor()
+
+SHARED_DIR = os.getenv("SHARED_DIR", "/shared")  # mount point inside containers
 SAVE_DIR = os.path.join(SHARED_DIR, "frames")    # /shared/frames
 os.makedirs(SAVE_DIR, exist_ok=True)
 
@@ -282,7 +294,7 @@ print("🚀 Central consumer with batching started")
 
 
 # -------------------------------------------------------
-# 2. Load config files (model settings + camera routing)
+# 2. Load Config Files Safely
 # -------------------------------------------------------
 def load_json(path):
     try:
@@ -291,38 +303,37 @@ def load_json(path):
     except:
         print(f"⚠️ Could not read {path}, using empty")
         return {}
-    
-MODELS_CONFIG_PATH = os.path.join(SHARED_DIR, "configs", "models_configs.json")
+
+MODELS_CONFIG_PATH = os.path.join(SHARED_DIR, "configs", "models_config.json")
 ROUTING_CONFIG_PATH = os.path.join(SHARED_DIR, "configs", "routing_config.json")
 
 config_models = load_json(MODELS_CONFIG_PATH)
 config_routing = load_json(ROUTING_CONFIG_PATH)
 
-
-# Track last modification time → for hot reload
-models_mtime = os.path.getmtime(MODELS_CONFIG_PATH)
-routing_mtime = os.path.getmtime(ROUTING_CONFIG_PATH)
+# Track modification timestamps
+models_mtime = os.path.getmtime(MODELS_CONFIG_PATH) if os.path.exists(MODELS_CONFIG_PATH) else 0
+routing_mtime = os.path.getmtime(ROUTING_CONFIG_PATH) if os.path.exists(ROUTING_CONFIG_PATH) else 0
 
 
 def hot_reload_configs():
-    """Reload configuration JSON files when changed."""
+    """Reload JSON files when they change on disk."""
     global config_models, config_routing, models_mtime, routing_mtime
 
     while True:
         try:
-            # Check models config
-            new_m_mtime = os.path.getmtime(MODELS_CONFIG_PATH)
-            if new_m_mtime != models_mtime:
-                config_models = load_json(MODELS_CONFIG_PATH)
-                models_mtime = new_m_mtime
-                print(f"🔄 Reloaded { MODELS_CONFIG_PATH }")
+            if os.path.exists(MODELS_CONFIG_PATH):
+                new_m_mtime = os.path.getmtime(MODELS_CONFIG_PATH)
+                if new_m_mtime != models_mtime:
+                    config_models = load_json(MODELS_CONFIG_PATH)
+                    models_mtime = new_m_mtime
+                    print(f"🔄 Reloaded {MODELS_CONFIG_PATH}")
 
-            # Check routing config
-            new_r_mtime = os.path.getmtime(ROUTING_CONFIG_PATH)
-            if new_r_mtime != routing_mtime:
-                config_routing = load_json(ROUTING_CONFIG_PATH)
-                routing_mtime = new_r_mtime
-                print(f"🔄 Reloaded { ROUTING_CONFIG_PATH }")
+            if os.path.exists(ROUTING_CONFIG_PATH):
+                new_r_mtime = os.path.getmtime(ROUTING_CONFIG_PATH)
+                if new_r_mtime != routing_mtime:
+                    config_routing = load_json(ROUTING_CONFIG_PATH)
+                    routing_mtime = new_r_mtime
+                    print(f"🔄 Reloaded {ROUTING_CONFIG_PATH}")
 
         except Exception as e:
             print("⚠️ Hot reload error:", e)
@@ -330,62 +341,47 @@ def hot_reload_configs():
         time.sleep(1)
 
 
-# Start hot-reload thread
 threading.Thread(target=hot_reload_configs, daemon=True).start()
 
 
 # -------------------------------------------------------
-# 3. Batch storage structure (in memory)
+# 3. Batch Structures
 # -------------------------------------------------------
-batches = {}  # {"model_name": [{"path":..., "timestamp":...}, ...]}
-batch_lock = threading.Lock()  # thread safety
-
-
-# Track when a batch started
-batch_start_time = {}  # {"model_name": timestamp}
+batches = {}              # {"model_name": [...]}
+batch_lock = threading.Lock()
+batch_start_time = {}     # {"model_name": timestamp}
 
 
 # -------------------------------------------------------
-# 4. Helper functions
+# 4. Helpers
 # -------------------------------------------------------
-
 def get_model_for_camera(plant, site, camera):
-    """Return the model assigned to (plant, site, camera)."""
+    """Return model assigned for a camera."""
     try:
-        return config_routing[plant][site][camera]
+        return config_routing[plant][site][camera]['model']
     except:
         return None
 
 
 def dispatch_batch(model_name):
-    """Send completed batch to Redis and clear it."""
-
+    """Push completed batch to Redis stream."""
     with batch_lock:
         batch = batches.get(model_name, [])
-
         if not batch:
-            return  # nothing to send
+            return
 
-        # Redis stream for model → model batches
+        payload = json.dumps(batch)
         stream_name = f"model_queue:{model_name}"
 
-        # Convert batch list to JSON
-        payload = json.dumps(batch)
-
-        # Push to Redis
         r.xadd(stream_name, {"batch": payload})
-
         print(f"📤 Sent batch → {model_name} | size={len(batch)}")
 
-        # Clear batch
         batches[model_name] = []
         batch_start_time[model_name] = time.time()
 
 
 def add_to_batch(model_name, item):
-    """Add image info to model batch."""
     with batch_lock:
-
         if model_name not in batches:
             batches[model_name] = []
             batch_start_time[model_name] = time.time()
@@ -394,11 +390,11 @@ def add_to_batch(model_name, item):
 
 
 def batch_monitor():
-    """Dispatch batches if max_wait_time exceeded."""
+    """Periodically dispatch timed-out batches."""
     while True:
         with batch_lock:
+            timed_out = []
             for model_name, batch_items in batches.items():
-
                 if not batch_items:
                     continue
 
@@ -406,19 +402,23 @@ def batch_monitor():
                 started = batch_start_time.get(model_name, time.time())
 
                 if time.time() - started >= max_wait:
-                    print(f"⏱ Timeout reached → dispatching {model_name}")
-                    dispatch_batch(model_name)
+                    timed_out.append(model_name)
 
-        time.sleep(0.2)
+
+        for model_name in timed_out:
+            print(f"⏱ Timeout → dispatching {model_name}")
+            dispatch_batch(model_name)
+
+        time.sleep(5)
 
 
 threading.Thread(target=batch_monitor, daemon=True).start()
 
 
 # -------------------------------------------------------
-# 5. MAIN LOOP – Read frames → Save → Route → Batch
+# 5. MAIN LOOP
 # -------------------------------------------------------
-last_id = "0-0"
+last_id = "$"   # Read ONLY new messages (important!)
 
 while True:
     try:
@@ -436,30 +436,44 @@ while True:
         camera = fields[b"camera_code"].decode()
         timestamp = fields[b"timestamp"].decode()
 
-        # Which model will process this camera?
+        # Determine model
         model = get_model_for_camera(plant, site, camera)
         if model is None:
-            print(f"⚠️ No model assigned for {plant}/{site}/{camera}")
+            print(f"⚠️ No model for {plant}/{site}/{camera}")
             continue
 
-        # Convert time to folder format
+        # Convert timestamp → folder name
         ts = datetime.fromisoformat(timestamp)
         folder_time = ts.strftime("%Y_%m_%d_%H")
 
-        # Save image to disk
+        # Save decoded image
         frame_bytes = base64.b64decode(fields[b"frame"])
 
         save_path = os.path.join(SAVE_DIR, plant, site, camera, folder_time)
         os.makedirs(save_path, exist_ok=True)
-        file_path = os.path.join(save_path, f"{msg_id}.jpg")
+
+        file_path = os.path.join(save_path, f"{msg_id.decode()}.jpg")
 
         with open(file_path, "wb") as f:
             f.write(frame_bytes)
 
         print(f"✔ Saved {file_path}")
 
-        # Remove from Redis to save RAM
-        r.xdel("camera_stream", msg_id)
+        # -------------------------------------------------------
+        # 🟢 ADD: Insert into Postgres BEFORE batching
+        # -------------------------------------------------------
+        pg_cur.execute(
+            """
+            INSERT INTO frame_repository (frame_id, plant, site, camera, timestamp, file_path)
+            VALUES (%s, %s, %s, %s, %s, %s)
+            ON CONFLICT (frame_id) DO NOTHING
+            """,
+            (msg_id.decode(), plant, site, camera, timestamp, file_path)
+        )
+        # -------------------------------------------------------
+
+        # DO NOT DELETE STREAM MESSAGE — EVER.
+        # If you want cleaning, use XTRIM at system level.
 
         # Add to batch
         add_to_batch(model, {
@@ -470,12 +484,12 @@ while True:
             "timestamp": timestamp
         })
 
-        # Check if batch full → send immediately
+        # Batch full? dispatch immediately
         current_batch = batches.get(model, [])
         batch_size = config_models.get(model, {}).get("batch_size", 4)
 
         if len(current_batch) >= batch_size:
-            print(f"📦 Max batch size reached → {model}")
+            print(f"📦 Max batch size → {model}")
             dispatch_batch(model)
 
     except Exception as e:
@@ -483,8 +497,11 @@ while True:
         time.sleep(1)
 
 
-File name: central_server\Dockerfile
-Content:     FROM python:3.10-slim
+==================================================
+FILE: central_server\Dockerfile
+==================================================
+
+    FROM python:3.10-slim
 
     WORKDIR /app
 
@@ -497,19 +514,42 @@ Content:     FROM python:3.10-slim
     CMD ["python", "central_consumer.py"]
 
 
-central_server\output
+==================================================
+FILE: central_server\requirements.txt
+==================================================
 
-File name: central_server\requirements.txt
-Content: numpy
+numpy
 redis
 fastapi
 uvicorn
 opencv-python-headless
+psycopg2-binary
 
 
 
-File name: model_worker\Dockerfile
-Content: FROM python:3.10-slim
+==================================================
+FILE: initdb\init.sql
+==================================================
+
+CREATE TABLE IF NOT EXISTS frame_repository (
+    id SERIAL PRIMARY KEY,
+    frame_id TEXT,
+    plant TEXT,
+    site TEXT,
+    camera TEXT,
+    timestamp TEXT,
+    file_path TEXT,
+    version INT DEFAULT 1
+);
+
+
+
+
+==================================================
+FILE: model_worker\Dockerfile
+==================================================
+
+FROM python:3.10-slim
 
 WORKDIR /app
 
@@ -521,16 +561,20 @@ COPY model_worker.py .
 CMD ["python", "model_worker.py"]
 
 
-File name: model_worker\model_worker.py
-Content: import os
+==================================================
+FILE: model_worker\model_worker.py
+==================================================
+
+import os
 import time
 import json
 import redis
 import base64
 import traceback
 
-from PIL import Image
-import numpy as np
+from ultralytics import YOLO
+import psycopg2
+from psycopg2.extras import Json
 
 # ---------------------------------------------------------
 # REDIS CONNECTION
@@ -538,69 +582,58 @@ import numpy as np
 REDIS_HOST = os.getenv("REDIS_HOST", "redis_server")
 r = redis.StrictRedis(host=REDIS_HOST, port=6379, db=0)
 
-print("🚀 Model Worker Started (Auto GPU/CPU Mode)")
+print("🚀 Model Worker Started (YOLO Only)")
 
 # ---------------------------------------------------------
-# AUTO DETECT MODE (GPU/TRITON or CPU)
+# GPU CHECK
 # ---------------------------------------------------------
-
 USE_GPU = False
-USE_TRITON = False
-
 try:
     import torch
-
     if torch.cuda.is_available():
         USE_GPU = True
-        print("💠 GPU detected! CUDA available.")
+        print("💠 GPU detected! Using CUDA.")
     else:
-        print("⬛ No GPU found (CUDA unavailable).")
-
+        print("⬛ CPU mode")
 except Exception:
-    print("❌ PyTorch missing, cannot detect GPU.")
+    print("❌ PyTorch missing — CPU mode only.")
 
-# Try Triton client
-try:
-    import tritonclient.http as httpclient
-    USE_TRITON = True
-    print("📡 Triton client available.")
-except Exception:
-    print("⚠️ Triton client not available; fallback to CPU YOLO.")
 
 # ---------------------------------------------------------
-# LOAD MODEL ACCORDING TO MODE
+# LOAD YOLO MODEL
 # ---------------------------------------------------------
+device = 0 if USE_GPU else "cpu"
+print(f"📦 Loading YOLO model on {device}...")
+model = YOLO("yolov8n.pt")
+model.to(device)
+print("✨ YOLO loaded.")
 
-if USE_TRITON:
-    try:
-        triton_client = httpclient.InferenceServerClient(url="triton_server:8000")
-        print("🔗 Connected to Triton server.")
-    except Exception:
-        print("❌ Triton server not reachable. Falling back to CPU.")
-        USE_TRITON = False
-
-if not USE_TRITON:
-    # Load Ultralytics YOLO model
-    from ultralytics import YOLO
-    try:
-        print("📦 Loading YOLO model on CPU...")
-        model = YOLO("yolov8n.pt")   # put your model here
-        print("✨ CPU YOLO loaded.")
-    except Exception as e:
-        print("❌ Error loading CPU model:", e)
-        raise
 
 # ---------------------------------------------------------
-# HELPER: Run Inference
+# POSTGRES CONNECTION
 # ---------------------------------------------------------
-def run_inference_cpu(image_paths):
-    """Run inference using YOLO CPU."""
+pg_conn = psycopg2.connect(
+    host=os.getenv("PG_HOST", "localhost"),
+    port=os.getenv("PG_PORT", "5432"),
+    dbname=os.getenv("PG_DB", "yolo_db"),
+    user=os.getenv("PG_USER", "postgres"),
+    password=os.getenv("PG_PASSWORD", "postgres")
+)
+pg_conn.autocommit = True
+pg_cursor = pg_conn.cursor()
+print("🐘 Connected to PostgreSQL")
+
+
+# ---------------------------------------------------------
+# YOLO Inference
+# ---------------------------------------------------------
+def run_inference_yolo(image_paths):
+
+    # send list of paths — Ultralytics handles batching internally
+    results_raw = model(image_paths)
+
     results = []
-
-    batch = [np.array(Image.open(p)) for p in image_paths]
-    output = model(batch)
-
-    for i, res in enumerate(output):
+    for i, res in enumerate(results_raw):
         detections = []
         for box in res.boxes:
             detections.append({
@@ -617,29 +650,15 @@ def run_inference_cpu(image_paths):
     return results
 
 
-def run_inference_triton(image_paths):
-    """Run inference using Triton."""
-    results = []
-
-    # TODO: Depends on your Triton model input format.
-    # Placeholder implementation:
-    for p in image_paths:
-        results.append({
-            "image_path": p,
-            "detections": [{"cls": 0, "conf": 0.99, "xyxy": [10, 10, 100, 100]}]
-        })
-
-    return results
-
 # ---------------------------------------------------------
-# MAIN LOOP – Read Batches From Redis
+# WORKER LOOP
 # ---------------------------------------------------------
-
 def process_batches():
     last_id = "0-0"
 
     while True:
         try:
+            # Read batch from Redis stream
             messages = r.xread({"model_queue:yolo_model": last_id}, block=5000, count=1)
             if not messages:
                 continue
@@ -653,28 +672,25 @@ def process_batches():
 
             image_paths = [item["frame_path"] for item in batch]
 
-            print(f"📥 Received batch with {len(image_paths)} images")
+            print(f"📥 Batch received: {len(image_paths)} images")
 
-            # -------------------------
-            # Run inference
-            # -------------------------
-            if USE_TRITON:
-                results = run_inference_triton(image_paths)
-            else:
-                results = run_inference_cpu(image_paths)
+            # Run YOLO
+            results = run_inference_yolo(image_paths)
 
-            # --------------------------
-            # Push results to next queue
-            # --------------------------
-            r.xadd("analysis_queue", {"results": json.dumps(results)})
+            # Save to PostgreSQL
+            for item in results:
+                pg_cursor.execute("""
+                    INSERT INTO yolo_results (image_path, detections)
+                    VALUES (%s, %s)
+                """, (item["image_path"], Json(item["detections"])))
 
-            print(f"📤 Sent inference results ({len(results)} images)")
+            print(f"💾 Saved {len(results)} results")
 
-            # delete processed batch
+            # Delete message from Redis
             r.xdel("model_queue:yolo_model", msg_id)
 
         except Exception as e:
-            print("❌ ERROR in worker:", e)
+            print("❌ Worker error:", e)
             traceback.print_exc()
             time.sleep(1)
 
@@ -682,45 +698,50 @@ def process_batches():
 process_batches()
 
 
-File name: model_worker\requirements.txt
-Content: redis
+==================================================
+FILE: model_worker\requirements.txt
+==================================================
+
+redis
 pillow
 numpy
 ultralytics
 tritonclient[http]
 torch  # optional for CPU inference
+psycopg2-binary
 
 
-shared\configs
+==================================================
+FILE: shared\configs\models_config.json
+==================================================
 
-shared\frames
-
-File name: shared\configs\models_config.json
-Content: {
+{
   "yolo_v8": { "batch_size": 4, "max_wait_time": 2 },
   "helmet_detector": { "batch_size": 8, "max_wait_time": 3 }
 }
 
 
-File name: shared\configs\routing_config.json
-Content: {
-  "plant1": {
-    "siteA": {
-      "cam01": "yolo_v8",
-      "cam02": "helmet_detector"
+==================================================
+FILE: shared\configs\routing_config.json
+==================================================
+
+{
+  "plantA": {
+    "site1": {
+      "CAM01": { "model" :"yolo_v8"},
+      "CAM02": { "model" :"helmet_detector"}
+    },
+    "site2": {
+      "CAM02": { "model" :"helmet_detector"}
     }
   },
 
   "plant9": {
     "siteZ": {
-      "cam77": "yolo_v8"
+      "cam77": { "model" :"yolo_v8"}
     }
   }
 }
 
 
-File name: camera_streamer\videos\sample1.mp4
-Content: [Binary/Unreadable file]
-
-File name: camera_streamer\videos\sample2.mkv
-Content: [Binary/Unreadable file]
+[Content skipped: shared/frames]

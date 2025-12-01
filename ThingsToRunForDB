@@ -1,0 +1,31 @@
+AP_VA_SERVER
+│
+├── camera_streamer/        ← Sends frames → Redis
+│   ├── videos/
+│   ├── app.py
+│   ├── Dockerfile
+│   └── requirements.txt
+│
+├── central_server/         ← Saves frames + routes batches → model workers
+│   ├── central_consumer.py
+│   ├── Dockerfile
+│   └── requirements.txt
+│
+├── model_worker/           ← Runs inference (YOLO / others)
+│   ├── model_worker.py
+│   ├── Dockerfile
+│   └── requirements.txt
+│
+├── initdb/                 ← PostgreSQL auto-create DB tables
+│   └── init.sql
+│
+├── postgres_data/          ← Volume for Postgres (auto created)
+│
+├── shared/                 ← Shared volume across all containers
+│   ├── configs/
+│   │    ├── models_config.json
+│   │    └── routing_config.json
+│   └── frames/
+│
+├── .gitignore
+└── docker-compose.yml
