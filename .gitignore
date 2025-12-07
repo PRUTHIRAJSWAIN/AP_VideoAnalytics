@@ -5,7 +5,5 @@ configs/frames/*
 project_report.txt
 shared/frames/*
 !shared/frames/.gitkeep
-shared/models/*
-!shared/models/.gitkeep
 postgres_data/*
 !postgres_data/.gitkeep
