@@ -1,4 +1,16 @@
 {
-  "yolo_v8": { "batch_size": 4, "max_wait_time": 2 },
-  "helmet_detector": { "batch_size": 8, "max_wait_time": 3 }
+  "yolo_v8": {
+    "batch_size": 4,
+    "max_wait_time": 2,
+    "type": "yolo",
+    "weights_file": "yolov11s.pt",
+    "model_id": 1
+  },
+  "helmet_detector": {
+    "batch_size": 8,
+    "max_wait_time": 3,
+    "type": "yolo",
+    "weights_file": "yolov11s.pt",
+    "model_id": 2
+  }
 }

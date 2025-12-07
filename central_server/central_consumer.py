@@ -209,10 +209,11 @@ while True:
             """
             INSERT INTO frame_repository (frame_id, plant, site, camera, timestamp, file_path)
             VALUES (%s, %s, %s, %s, %s, %s)
-            ON CONFLICT (frame_id) DO NOTHING
+            RETURNING id
             """,
             (msg_id.decode(), plant, site, camera, timestamp, file_path)
         )
+        db_id = pg_cur.fetchone()[0]
         # -------------------------------------------------------
 
         # DO NOT DELETE STREAM MESSAGE — EVER.
@@ -224,7 +225,8 @@ while True:
             "plant": plant,
             "site": site,
             "camera": camera,
-            "timestamp": timestamp
+            "timestamp": timestamp,
+            "frame_db_id": db_id
         })
 
         # Batch full? dispatch immediately

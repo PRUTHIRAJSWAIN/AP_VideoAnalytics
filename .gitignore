@@ -1,2 +1,11 @@
 camera_streamer/videos/*
 !camera_streamer/videos/
+configs/frames/*
+!configs/frames/
+project_report.txt
+shared/frames/*
+!shared/frames/
+shared/models/*
+!shared/models/
+postgres_data/*
+!postgres_data/

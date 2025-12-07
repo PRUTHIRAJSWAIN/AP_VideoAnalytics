@@ -29,3 +29,9 @@ AP_VA_SERVER
 │
 ├── .gitignore
 └── docker-compose.yml
+
+
+1. Multi-model sequential processing
+The image goes through a chain of models where each model uses the previous model’s output, such as detecting a person, then estimating pose, then checking if the person is holding a phone.
+2. Same frame processed at different frequencies
+One frame can be sent to multiple models, but each model receives it based on its required frequency—fast tasks get every frame, while slower tasks like helmet detection get frames only at longer intervals.

@@ -1,5 +1,3 @@
-version: "3.8"
-
 services:
 
   redis:
@@ -74,31 +72,31 @@ services:
         condition: service_started
 
 
-  # model_worker:
-  #   build: ./model_worker
-  #   container_name: model_worker_container
-  #   image: model_worker
-  #   environment:
-  #     PG_HOST: postgres_server
-  #     PG_PORT: "5432"
-  #     PG_DB: frames_db
-  #     PG_USER: postgres
-  #     PG_PASSWORD: postgres
+  model_worker:
+    build: ./model_worker
+    container_name: model_worker_container
+    image: model_worker
+    environment:
+      PG_HOST: postgres_server
+      PG_PORT: "5432"
+      PG_DB: frames_db
+      PG_USER: postgres
+      PG_PASSWORD: postgres
 
-  #     REDIS_HOST: redis_server
-  #     SHARED_DIR: /shared
-  #   volumes:
-  #     - D:/personalproject/AP_VA_Server/shared:/shared
-  #   networks:
-  #     - safety_net
-  #   restart: always
-  #   depends_on:
-  #     postgres:
-  #       condition: service_healthy
-  #     central_server:
-  #       condition: service_started
-  #     redis:
-  #       condition: service_started
+      REDIS_HOST: redis_server
+      SHARED_DIR: /shared
+    volumes:
+      - D:/personalproject/AP_VA_Server/shared:/shared
+    networks:
+      - safety_net
+    restart: always
+    depends_on:
+      postgres:
+        condition: service_healthy
+      central_server:
+        condition: service_started
+      redis:
+        condition: service_started
 
 networks:
   safety_net:

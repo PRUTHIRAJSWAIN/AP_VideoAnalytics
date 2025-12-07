@@ -1,7 +1,8 @@
+opencv-python-headless
 redis
 pillow
 numpy
 ultralytics
 tritonclient[http]
-torch  # optional for CPU inference
+torch
 psycopg2-binary
