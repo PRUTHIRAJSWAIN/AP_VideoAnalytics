@@ -1,11 +1,11 @@
 camera_streamer/videos/*
-!camera_streamer/videos/
+!camera_streamer/videos/.gitkeep
 configs/frames/*
-!configs/frames/
+!configs/frames/.gitkeep
 project_report.txt
 shared/frames/*
-!shared/frames/
+!shared/frames/.gitkeep
 shared/models/*
-!shared/models/
+!shared/models/.gitkeep
 postgres_data/*
-!postgres_data/
+!postgres_data/.gitkeep
