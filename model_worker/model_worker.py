@@ -5,6 +5,8 @@ import redis
 import base64
 import traceback
 import threading
+from datetime import datetime
+import cv2
 from abc import ABC, abstractmethod
 
 # Optional imports for specific backends
@@ -14,6 +16,7 @@ try:
 except ImportError:
     YOLO = None
     torch = None
+    print("YOLO not installed or failed to import")
 
 import psycopg2
 from psycopg2.extras import Json
@@ -90,7 +93,8 @@ class YOLOBackend(ModelBackend):
 
     def load(self):
         if YOLO is None:
-            raise ImportError("Ultralytics not installed")
+            # raise ImportError("Ultralytics not installed")
+            print("Ultralytics not installed")
 
         # Check if weights file exists locally
         if not os.path.exists(self.weights_file):
@@ -118,7 +122,8 @@ class YOLOBackend(ModelBackend):
 
             results.append({
                 "image_path": image_paths[i],
-                "detections": detections
+                "detections": detections,
+                "original_result": res
             })
         return results
 
@@ -157,9 +162,47 @@ def worker_loop(backend):
             results = backend.infer(image_paths)
 
 
-            # Save to PostgreSQL
+            # Save to PostgreSQL and disk
             for i, item in enumerate(results):
                 batch_item = batch[i]
+                rule_ids = batch_item.get("rule_ids", [])
+
+                # -----------------------------------------------------
+                # SAVE ANNOTATED IMAGE IF DETECTIONS EXIST
+                # -----------------------------------------------------
+                if len(item["detections"]) > 0:
+                    try:
+                        plant = batch_item.get("plant")
+                        site = batch_item.get("site")
+                        camera = batch_item.get("camera")
+                        timestamp_str = batch_item.get("timestamp")
+
+                        if plant and site and camera and timestamp_str:
+                            ts = datetime.fromisoformat(timestamp_str)
+                            folder_time = ts.strftime("%Y_%m_%d_%H")
+                            
+                            # /shared/detected_frames/plant/site/camera/2023_...
+                            save_dir = os.path.join(SHARED_DIR, "detected_frames", plant, site, camera, folder_time)
+                            os.makedirs(save_dir, exist_ok=True)
+
+                            original_filename = os.path.basename(item["image_path"])
+                            
+                            # Fix overlap: append model name
+                            name_part, ext_part = os.path.splitext(original_filename)
+                            new_filename = f"{name_part}_{backend.model_name}{ext_part}"
+                            
+                            save_path = os.path.join(save_dir, new_filename)
+
+                            # Plot (returns BGR numpy array compatible with cv2)
+                            plotted_img = item["original_result"].plot()
+                            cv2.imwrite(save_path, plotted_img)
+                            print(f"[{backend.model_name}] 📸 Saved detection: {save_path} (Rules: {rule_ids})")
+                    except Exception as e:
+                        print(f"[{backend.model_name}] ⚠️ Failed to save annotation: {e}")
+                
+                # -----------------------------------------------------
+                # DB SAVE
+                # -----------------------------------------------------
                 frame_db_id = batch_item.get("frame_db_id")
                 model_id = backend.config.get("model_id")
                 
@@ -201,6 +244,9 @@ def load_config():
 
 def main():
     print("🚀 Model Worker Manager Started")
+    if YOLO is None:
+        # raise ImportError("Ultralytics not installed")  
+        print("Ultralytics not installed")
     # Wait for Redis/DB to be ready
     time.sleep(5) 
     

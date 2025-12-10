@@ -3,6 +3,5 @@ redis
 pillow
 numpy
 ultralytics
-tritonclient[http]
 torch
 psycopg2-binary

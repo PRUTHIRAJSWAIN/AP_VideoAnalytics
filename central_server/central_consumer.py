@@ -98,12 +98,48 @@ batch_start_time = {}     # {"model_name": timestamp}
 # -------------------------------------------------------
 # 4. Helpers
 # -------------------------------------------------------
-def get_model_for_camera(plant, site, camera):
-    """Return model assigned for a camera."""
+
+
+def get_models_for_camera(plant_name, site_name, camera_code):
+    """
+    Return dict of models -> rule_ids for a given plant/site/camera.
+    """
+    found_models = {} # model_name -> set(rule_ids)
+    
     try:
-        return config_routing[plant][site][camera]['model']
-    except:
-        return None
+        plants_list = config_routing.get("plants", [])
+        # Find Plant
+        plant_obj = next((p for p in plants_list if p.get("plant_id") == plant_name), None)
+        if not plant_obj:
+            return {}
+
+        # Find Site
+        sites_list = plant_obj.get("sites", [])
+        site_obj = next((s for s in sites_list if s.get("site_id") == site_name), None)
+        if not site_obj:
+            return {}
+            
+        # Find Camera
+        cameras_list = site_obj.get("camera", []) 
+        cam_obj = next((c for c in cameras_list if c.get("camera_id") == camera_code), None)
+        if not cam_obj:
+             return {}
+
+        # Collect models from all Rules
+        rules = cam_obj.get("rules", [])
+        for r in rules:
+            r_id = r.get("rule_id", "unknown_rule")
+            for m in r.get("models", []):
+                if m not in found_models:
+                    found_models[m] = set()
+                found_models[m].add(r_id)
+
+    except Exception as e:
+        print(f"⚠️ Routing lookup error: {e}")
+        return {}
+
+    # Convert sets to lists
+    return {k: list(v) for k, v in found_models.items()}
 
 
 def dispatch_batch(model_name):
@@ -179,10 +215,10 @@ while True:
         camera = fields[b"camera_code"].decode()
         timestamp = fields[b"timestamp"].decode()
 
-        # Determine model
-        model = get_model_for_camera(plant, site, camera)
-        if model is None:
-            print(f"⚠️ No model for {plant}/{site}/{camera}")
+        # Determine models (1-to-Many with Key=Model, Value=RuleIDs)
+        target_models_dict = get_models_for_camera(plant, site, camera)
+        if not target_models_dict:
+            print(f"⚠️ No models found for {plant}/{site}/{camera}")
             continue
 
         # Convert timestamp → folder name
@@ -201,7 +237,7 @@ while True:
             f.write(frame_bytes)
 
         print(f"✔ Saved {file_path}")
-
+        
         # -------------------------------------------------------
         # 🟢 ADD: Insert into Postgres BEFORE batching
         # -------------------------------------------------------
@@ -209,33 +245,41 @@ while True:
             """
             INSERT INTO frame_repository (frame_id, plant, site, camera, timestamp, file_path)
             VALUES (%s, %s, %s, %s, %s, %s)
+            ON CONFLICT (frame_id) DO NOTHING
             RETURNING id
             """,
             (msg_id.decode(), plant, site, camera, timestamp, file_path)
         )
-        db_id = pg_cur.fetchone()[0]
+        row = pg_cur.fetchone()
+        
+        if row:
+            db_id = row[0]
+        else:
+             # Fetch existing
+            pg_cur.execute("SELECT id FROM frame_repository WHERE frame_id = %s", (msg_id.decode(),))
+            db_id = pg_cur.fetchone()[0]
+
         # -------------------------------------------------------
 
-        # DO NOT DELETE STREAM MESSAGE — EVER.
-        # If you want cleaning, use XTRIM at system level.
+        # Add to batch for EACH model (Deduplicated)
+        for model, rule_ids in target_models_dict.items():
+            add_to_batch(model, {
+                "frame_path": file_path,
+                "plant": plant,
+                "site": site,
+                "camera": camera,
+                "timestamp": timestamp,
+                "frame_db_id": db_id,
+                "rule_ids": rule_ids 
+            })
 
-        # Add to batch
-        add_to_batch(model, {
-            "frame_path": file_path,
-            "plant": plant,
-            "site": site,
-            "camera": camera,
-            "timestamp": timestamp,
-            "frame_db_id": db_id
-        })
+            # Check batch size immediately
+            current_batch = batches.get(model, [])
+            batch_size = config_models.get(model, {}).get("batch_size", 4)
 
-        # Batch full? dispatch immediately
-        current_batch = batches.get(model, [])
-        batch_size = config_models.get(model, {}).get("batch_size", 4)
-
-        if len(current_batch) >= batch_size:
-            print(f"📦 Max batch size → {model}")
-            dispatch_batch(model)
+            if len(current_batch) >= batch_size:
+                print(f"📦 Max batch size → {model}")
+                dispatch_batch(model)
 
     except Exception as e:
         print("❌ ERROR:", e)

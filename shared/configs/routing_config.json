@@ -1,17 +1,29 @@
 {
-  "plantA": {
-    "site1": {
-      "CAM01": { "model" :"yolo_v8"},
-      "CAM02": { "model" :"helmet_detector"}
-    },
-    "site2": {
-      "CAM02": { "model" :"helmet_detector"}
+  "plants": [
+    {
+      "plant_id": "plantA",
+      "description": "Main production plant",
+      "sites": [
+        {
+          "site_id": "site1",
+          "description": "Entrance Gate",
+          "camera": [
+            {
+              "camera_id": "camera1",
+              "description": "Entrance Gate",
+              "rules": [
+                {
+                  "rule_id": "person_detection",
+                  "description": "Person Detection",
+                  "models": [
+                    "yolo_v8"
+                  ]
+                }
+              ]
+            }
+          ]
+        }
+      ]
     }
-  },
-
-  "plant9": {
-    "siteZ": {
-      "cam77": { "model" :"yolo_v8"}
-    }
-  }
+  ]
 }
